@@ -111,7 +111,7 @@ func readCsvFile(filePath string) []data {
 	return res
 }
 
-type interval struct {
+type peakData struct {
 	LowTimestamp uint64 `json:"start_time"`
 	UpTimestamp  uint64 `json:"endTime_time"`
 
@@ -127,7 +127,7 @@ func findAllDimensionPeaks(
 	records []data,
 	maxComplexities, medianComplexityRate commonfees.Dimensions,
 	peaksCount int,
-) [][]interval {
+) [][]peakData {
 	var (
 		heightsAndTimes = pullTimesHeightsFromRecords(records)
 		bandwidths      = pullComplexityFromRecords(records, commonfees.Bandwidth)
@@ -141,7 +141,7 @@ func findAllDimensionPeaks(
 	utxosWriteIntervals := findPeaks(heightsAndTimes, utxosWrites, maxComplexities[commonfees.UTXOWrite], medianComplexityRate[commonfees.UTXOWrite])
 	computeIntervals := findPeaks(heightsAndTimes, computes, maxComplexities[commonfees.Compute], medianComplexityRate[commonfees.Compute])
 
-	return [][]interval{
+	return [][]peakData{
 		bandwitdhIntervals[max(0, len(bandwitdhIntervals)-peaksCount):],
 		utxosReadIntervals[max(0, len(utxosReadIntervals)-peaksCount):],
 		utxosWriteIntervals[max(0, len(utxosWriteIntervals)-peaksCount):],
@@ -154,13 +154,13 @@ func findAllDimensionPeaks(
 // - They finish when trace goes below the median value
 // Note that median value are median rate * elapsed time among blocks
 // Peaks are sorted decreasingly by cumulated complexity
-func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, cap, medianRate uint64) []interval {
+func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, cap, medianRate uint64) []peakData {
 	if len(heightsAndTimes) != len(trace) {
 		log.Fatal("time and trance have different lenght")
 	}
 
 	var (
-		res         = make([]interval, 0)
+		res         = make([]peakData, 0)
 		peakStarted = false
 	)
 
@@ -174,7 +174,7 @@ func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, cap, medianRate 
 			peakStarted = true
 			res = append(
 				res,
-				interval{
+				peakData{
 					LowTimestamp:        heightsAndTimes[i].Time,
 					UpTimestamp:         heightsAndTimes[i].Time,
 					CumulatedComplexity: v,
