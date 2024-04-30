@@ -16,6 +16,8 @@ import (
 	"gonum.org/v1/plot/vg"
 
 	"github.com/ava-labs/avalanchego/ids"
+	"github.com/ava-labs/avalanchego/utils/units"
+
 	commonfees "github.com/ava-labs/avalanchego/vms/components/fees"
 )
 
@@ -31,16 +33,57 @@ type BlkHeightTime struct {
 	Time   uint64
 }
 
-type data struct {
+type rawData struct {
 	ID ids.ID
 	BlkHeightTime
 	Complexity commonfees.Dimensions
 }
 
+type feeData struct {
+	BlkHeightTime
+	feeRates commonfees.Dimensions
+}
+
+func calculateFeeRates(records []rawData, feeCfg commonfees.DynamicFeesConfig) []feeData {
+	res := make([]feeData, 0, len(records))
+
+	res = append(res, feeData{
+		BlkHeightTime: records[0].BlkHeightTime,
+		feeRates:      feeCfg.InitialFeeRate,
+	})
+	for i := 1; i < len(records); i++ {
+		var (
+			r                   = records[i]
+			parentBlkTime       = int64(records[i-1].Time)
+			parentBlkComplexity = records[i-1].Complexity
+			parentFeeRates      = res[len(res)-1].feeRates
+
+			blkTime = int64(r.Time)
+		)
+
+		feeMan := commonfees.NewManager(parentFeeRates)
+		if err := feeMan.UpdateFeeRates(
+			feeCfg,
+			parentBlkComplexity,
+			parentBlkTime,
+			blkTime,
+		); err != nil {
+			panic(fmt.Sprintf("failed updating fee rates, %s", err))
+		}
+
+		res = append(res, feeData{
+			BlkHeightTime: r.BlkHeightTime,
+			feeRates:      feeMan.GetFeeRates(),
+		})
+	}
+
+	return res
+}
+
 // CSV structure is assumed to be the following:
 // [Blk-ID, Blk-Height, Blk-Time, [Complexities]]
 // Where complexities are: [Bandwitdth, UTXOsRead, UTXOsWrite, Compute]
-func readCsvFile(filePath string) []data {
+func readCsvFile(filePath string) []rawData {
 	f, err := os.Open(filePath)
 	if err != nil {
 		log.Fatal("Unable to read input file "+filePath, err)
@@ -53,7 +96,7 @@ func readCsvFile(filePath string) []data {
 		log.Fatal("Unable to parse file as CSV for "+filePath, err)
 	}
 
-	res := make([]data, 0, len(records))
+	res := make([]rawData, 0, len(records))
 
 	for ri, row := range records {
 		if len(row) != recordsLen {
@@ -61,7 +104,7 @@ func readCsvFile(filePath string) []data {
 		}
 
 		var (
-			entry = data{}
+			entry = rawData{}
 			err   error
 		)
 
@@ -124,7 +167,7 @@ type peakData struct {
 // returns for each dimension, the start and stop indexes of each peaks
 // sorted by power, i.e. \sum_peak{complexity}/peak_time_duration
 func findAllDimensionPeaks(
-	records []data,
+	records []rawData,
 	maxComplexities, medianComplexityRate commonfees.Dimensions,
 	peaksCount int,
 ) [][]peakData {
@@ -217,18 +260,18 @@ func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, cap, medianRate 
 	return res
 }
 
-func medianComplexityRate(records []data, minHeight uint64) (uint64, commonfees.Dimensions) {
-	// medianComplexityRate calculates median time among blocks and median complexity rate
+func targetComplexityRate(records []rawData, minHeight uint64, quantile float64) (uint64, commonfees.Dimensions) {
+	// targetComplexityRate calculates median time among blocks and complexity rate at chosen quantile
 	// We drop empty blocks, with no complexity, since they would skew down
 	// median complexity.
 	// We can skip pre-Banff blocks, whose timestamp is not in the block really
 
 	// We return a 5 components slice with:
 	// - median time among blocks
-	// - median complexities
+	// - target complexities
 	var (
 		medianBlockDelay   = uint64(0)
-		medianComplexities = commonfees.Empty
+		targetComplexities = commonfees.Empty
 	)
 
 	noEmptyRecords := skipEmptyRecords(records)
@@ -237,47 +280,32 @@ func medianComplexityRate(records []data, minHeight uint64) (uint64, commonfees.
 	timeSteps, bandwitdhDeriv, utxosReadDeriv, utxosWriteDeriv, computeDeriv := derivatives(recordsToProcess)
 
 	sort.Slice(timeSteps, func(i, j int) bool { return timeSteps[i] < timeSteps[j] })
-	if mid := len(timeSteps) / 2; len(timeSteps)%2 == 0 {
-		medianBlockDelay = timeSteps[mid]
-	} else {
-		medianBlockDelay = (timeSteps[mid] + timeSteps[mid+1]) / 2
-	}
+	q := int(float64(len(timeSteps)) * 0.5)
+	medianBlockDelay = timeSteps[q]
 
 	sort.Float64s(bandwitdhDeriv)
-	if mid := len(bandwitdhDeriv) / 2; len(bandwitdhDeriv)%2 == 0 {
-		medianComplexities[commonfees.Bandwidth] = uint64(bandwitdhDeriv[mid])
-	} else {
-		medianComplexities[commonfees.Bandwidth] = uint64((bandwitdhDeriv[mid] + bandwitdhDeriv[mid+1]) / 2)
-	}
+	q = int(float64(len(bandwitdhDeriv)) * quantile)
+	targetComplexities[commonfees.Bandwidth] = uint64(bandwitdhDeriv[q])
 
 	sort.Float64s(utxosReadDeriv)
-	if mid := len(utxosReadDeriv) / 2; len(utxosReadDeriv)%2 == 0 {
-		medianComplexities[commonfees.UTXORead] = uint64(utxosReadDeriv[mid])
-	} else {
-		medianComplexities[commonfees.UTXORead] = uint64((utxosReadDeriv[mid] + utxosReadDeriv[mid+1]) / 2)
-	}
+	q = int(float64(len(utxosReadDeriv)) * quantile)
+	targetComplexities[commonfees.UTXORead] = uint64(utxosReadDeriv[q])
 
 	sort.Float64s(utxosWriteDeriv)
-	if mid := len(utxosWriteDeriv) / 2; len(utxosWriteDeriv)%2 == 0 {
-		medianComplexities[commonfees.UTXORead] = uint64(utxosWriteDeriv[mid])
-	} else {
-		medianComplexities[commonfees.UTXORead] = uint64((utxosWriteDeriv[mid] + utxosWriteDeriv[mid+1]) / 2)
-	}
+	q = int(float64(len(utxosWriteDeriv)) * quantile)
+	targetComplexities[commonfees.UTXOWrite] = uint64(utxosWriteDeriv[q])
 
 	sort.Float64s(computeDeriv)
-	if mid := len(computeDeriv) / 2; len(computeDeriv)%2 == 0 {
-		medianComplexities[commonfees.Compute] = uint64(computeDeriv[mid])
-	} else {
-		medianComplexities[commonfees.Compute] = uint64((computeDeriv[mid] + computeDeriv[mid+1]) / 2)
-	}
+	q = int(float64(len(computeDeriv)) * quantile)
+	targetComplexities[commonfees.Compute] = uint64(computeDeriv[q])
 
-	return medianBlockDelay, medianComplexities
+	return medianBlockDelay, targetComplexities
 }
 
-func maxComplexity(records []data) commonfees.Dimensions {
+func maxComplexity(records []rawData) commonfees.Dimensions {
 	res := commonfees.Empty
 	for i := 0; i < commonfees.FeeDimensions; i++ {
-		max := slices.MaxFunc(records, func(lhs, rhs data) int {
+		max := slices.MaxFunc(records, func(lhs, rhs rawData) int {
 			switch {
 			case lhs.Complexity[i] < rhs.Complexity[i]:
 				return -1
@@ -294,7 +322,7 @@ func maxComplexity(records []data) commonfees.Dimensions {
 	return res
 }
 
-func derivatives(records []data) ([]uint64, []float64, []float64, []float64, []float64) {
+func derivatives(records []rawData) ([]uint64, []float64, []float64, []float64, []float64) {
 	timeSteps := make([]uint64, 0, len(records)-1)
 	bandwitdhDeriv := make([]float64, 0, len(records)-1)
 	utxosReadDeriv := make([]float64, 0, len(records)-1)
@@ -319,9 +347,13 @@ func derivatives(records []data) ([]uint64, []float64, []float64, []float64, []f
 func main() {
 	records := readCsvFile("./P-chain_complexities.csv")
 
-	medianBlockDelay, medianComplexities := medianComplexityRate(records, minBanffHeight /*skip pre Banff blocks*/)
-	fmt.Printf("median block delay: %v\n", medianBlockDelay)
-	fmt.Printf("median complexities: %v\n", medianComplexities)
+	targetBlockDelay, targetComplexityRate := targetComplexityRate(
+		records,
+		minBanffHeight, /*skip pre Banff blocks*/
+		0.8,            /*from 0 to 1*/
+	)
+	fmt.Printf("target block delay: %v\n", targetBlockDelay)
+	fmt.Printf("target complexities: %v\n", targetComplexityRate)
 	fmt.Printf("\n")
 
 	// historical max complexity. This may be way more than
@@ -331,9 +363,7 @@ func main() {
 	fmt.Printf("\n")
 
 	// find top peaks
-	// maxComplexities = commonfees.Dimensions{40_000, 12_000, 16_000, 1_200_000}
-	medianComplexityRate := commonfees.Dimensions{200, 60, 80, 600}
-	topPeaks := findAllDimensionPeaks(records, maxComplexities, medianComplexityRate, 10)
+	topPeaks := findAllDimensionPeaks(records, maxComplexities, targetComplexityRate, 10)
 	for d := uint64(0); d < commonfees.FeeDimensions; d++ {
 		for i := len(topPeaks[d]) - 1; i >= 0; i-- {
 			fmt.Printf("peak n° %d, dimension %s: %+v\n", len(topPeaks[d])-i, commonfees.DimensionStrings[d], topPeaks[d][i])
@@ -341,7 +371,6 @@ func main() {
 		fmt.Printf("\n")
 	}
 
-	// plots ranges of complexities
 	var (
 		dimension      = commonfees.Bandwidth
 		dimensionPeaks = topPeaks[dimension]
@@ -349,16 +378,46 @@ func main() {
 
 		minHeight = targetPeak.StartHeight + 1
 		maxHeight = minHeight + uint64(targetPeak.BlocksCount)
-		marginLow = 5
+		marginLow = 10
 		low       = uint64(max(0, int(minHeight)-marginLow)) // minHeight - some margin
 
-		marginUp = 15
+		marginUp = 10
 		up       = maxHeight + uint64(marginUp) // maxHeight + some margin
 
-		r      = filterRecordsByHeight(records, low, up)
-		data   = pullComplexityFromRecords(r, dimension)
-		x      = make([]uint64, len(r)) // block height or timestamp
-		target = make([]uint64, len(r)) // target complexity
+		r = filterRecordsByHeight(records, low, up)
+	)
+
+	// calculate fee rates
+	feeCfg := commonfees.DynamicFeesConfig{
+		InitialFeeRate: commonfees.Dimensions{
+			80 * units.NanoAvax,
+			10 * units.NanoAvax,
+			15 * units.NanoAvax,
+			50 * units.NanoAvax,
+		},
+		MinFeeRate: commonfees.Dimensions{ // 3/4 of InitialFees
+			60 * units.NanoAvax,
+			8 * units.NanoAvax,
+			10 * units.NanoAvax,
+			35 * units.NanoAvax,
+		},
+		UpdateCoefficient: commonfees.Dimensions{ // over fees.CoeffDenom
+			3,
+			2,
+			2,
+			3,
+		},
+		BlockMaxComplexity:        maxComplexities,
+		BlockTargetComplexityRate: targetComplexityRate,
+	}
+	allFeeRates := calculateFeeRates(r, feeCfg)
+
+	// plots ranges of complexities
+	var (
+		data    = pullComplexityFromRecords(r, dimension)
+		x       = make([]uint64, len(r)) // block height or timestamp
+		target  = make([]uint64, len(r)) // target complexity
+		feeRate = pullFeeRates(allFeeRates, low, up, commonfees.Bandwidth)
 	)
 
 	// // x is a synthetic dimension along which we plot data.
@@ -377,19 +436,14 @@ func main() {
 	}
 
 	for i := 1; i < len(data); i++ {
-		target[i] = min(maxComplexities[dimension], medianComplexityRate[dimension]*(max(1, r[i].Time-r[i-1].Time)))
+		target[i] = min(maxComplexities[dimension], targetComplexityRate[dimension]*(max(1, r[i].Time-r[i-1].Time)))
 	}
 	target[0] = target[1]
 
-	// for _, d := range r {
-	// 	fmt.Printf("%v\n", d)
-	// }
-	// fmt.Printf("\n")
-
-	printImage(x, data, target, dimension)
+	printImage(x, data, target, feeRate, dimension)
 }
 
-func printImage(x, data, targetComplexity []uint64, d commonfees.Dimension) {
+func printImage(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimension) {
 	p := plot.New()
 
 	p.Title.Text = "peak complexities"
@@ -398,7 +452,8 @@ func printImage(x, data, targetComplexity []uint64, d commonfees.Dimension) {
 
 	err := plotutil.AddLinePoints(p,
 		commonfees.DimensionStrings[d], traceToPlotter(x, data),
-		"Target", traceToPlotter(x, targetComplexity),
+		"target", traceToPlotter(x, targetComplexity),
+		"feeRate", traceToPlotter(x, feeRate),
 	)
 	if err != nil {
 		panic(err)
@@ -414,15 +469,16 @@ func traceToPlotter(x, trace []uint64) plotter.XYs {
 	if len(x) != len(trace) {
 		panic("uneven x and y")
 	}
+	// max := slices.Max(trace)
 	pts := make(plotter.XYs, len(trace))
 	for i, v := range trace {
 		pts[i].X = float64(x[i])
-		pts[i].Y = float64(v)
+		pts[i].Y = float64(v) // / float64(max)
 	}
 	return pts
 }
 
-func pullTimesHeightsFromRecords(records []data) []BlkHeightTime {
+func pullTimesHeightsFromRecords(records []rawData) []BlkHeightTime {
 	res := make([]BlkHeightTime, 0, len(records))
 	for _, r := range records {
 		res = append(res, r.BlkHeightTime)
@@ -430,7 +486,7 @@ func pullTimesHeightsFromRecords(records []data) []BlkHeightTime {
 	return res
 }
 
-func pullComplexityFromRecords(records []data, d commonfees.Dimension) []uint64 {
+func pullComplexityFromRecords(records []rawData, d commonfees.Dimension) []uint64 {
 	res := make([]uint64, 0, len(records))
 	for _, r := range records {
 		res = append(res, r.Complexity[d])
@@ -438,8 +494,19 @@ func pullComplexityFromRecords(records []data, d commonfees.Dimension) []uint64 
 	return res
 }
 
-func skipEmptyRecords(records []data) []data {
-	res := make([]data, 0, len(records))
+func pullFeeRates(allFeeRates []feeData, low, up uint64, d commonfees.Dimension) []uint64 {
+	res := make([]uint64, 0, min(len(allFeeRates), int(up-low)))
+	for _, data := range allFeeRates {
+		if data.Height < low || data.Height > up {
+			continue
+		}
+		res = append(res, data.feeRates[d])
+	}
+	return res
+}
+
+func skipEmptyRecords(records []rawData) []rawData {
+	res := make([]rawData, 0, len(records))
 	for _, r := range records {
 		if r.Complexity != commonfees.Empty {
 			res = append(res, r)
@@ -450,8 +517,8 @@ func skipEmptyRecords(records []data) []data {
 }
 
 // assumes [records] is non-empty
-func filterRecordsByHeight(records []data, minHeight, maxHeight uint64) []data {
-	res := make([]data, 0)
+func filterRecordsByHeight(records []rawData, minHeight, maxHeight uint64) []rawData {
+	res := make([]rawData, 0)
 	for _, r := range records {
 		if r.Height >= minHeight && r.Height <= maxHeight {
 			res = append(res, r)
