@@ -125,7 +125,7 @@ type interval struct {
 // sorted by power, i.e. \sum_peak{complexity}/peak_time_duration
 func findAllDimensionPeaks(
 	records []data,
-	medianComplexityRate commonfees.Dimensions,
+	maxComplexities, medianComplexityRate commonfees.Dimensions,
 	peaksCount int,
 ) [][]interval {
 	var (
@@ -136,16 +136,16 @@ func findAllDimensionPeaks(
 		computes        = pullComplexityFromRecords(records, commonfees.Compute)
 	)
 
-	bandwitdhIntervals := findPeaks(heightsAndTimes, bandwidths, medianComplexityRate[commonfees.Bandwidth])
-	utxosReadIntervals := findPeaks(heightsAndTimes, utxosReads, medianComplexityRate[commonfees.UTXORead])
-	utxosWriteIntervals := findPeaks(heightsAndTimes, utxosWrites, medianComplexityRate[commonfees.UTXOWrite])
-	computeIntervals := findPeaks(heightsAndTimes, computes, medianComplexityRate[commonfees.Compute])
+	bandwitdhIntervals := findPeaks(heightsAndTimes, bandwidths, maxComplexities[commonfees.Bandwidth], medianComplexityRate[commonfees.Bandwidth])
+	utxosReadIntervals := findPeaks(heightsAndTimes, utxosReads, maxComplexities[commonfees.UTXORead], medianComplexityRate[commonfees.UTXORead])
+	utxosWriteIntervals := findPeaks(heightsAndTimes, utxosWrites, maxComplexities[commonfees.UTXOWrite], medianComplexityRate[commonfees.UTXOWrite])
+	computeIntervals := findPeaks(heightsAndTimes, computes, maxComplexities[commonfees.Compute], medianComplexityRate[commonfees.Compute])
 
 	return [][]interval{
-		bandwitdhIntervals[len(bandwitdhIntervals)-peaksCount:],
-		utxosReadIntervals[len(utxosReadIntervals)-peaksCount:],
-		utxosWriteIntervals[len(utxosWriteIntervals)-peaksCount:],
-		computeIntervals[len(computeIntervals)-peaksCount:],
+		bandwitdhIntervals[max(0, len(bandwitdhIntervals)-peaksCount):],
+		utxosReadIntervals[max(0, len(utxosReadIntervals)-peaksCount):],
+		utxosWriteIntervals[max(0, len(utxosWriteIntervals)-peaksCount):],
+		computeIntervals[max(0, len(computeIntervals)-peaksCount):],
 	}
 }
 
@@ -154,7 +154,7 @@ func findAllDimensionPeaks(
 // - They finish when trace goes below the median value
 // Note that median value are median rate * elapsed time among blocks
 // Peaks are sorted decreasingly by cumulated complexity
-func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, medianRate uint64) []interval {
+func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, cap, medianRate uint64) []interval {
 	if len(heightsAndTimes) != len(trace) {
 		log.Fatal("time and trance have different lenght")
 	}
@@ -166,7 +166,7 @@ func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, medianRate uint6
 
 	for i := 1; i < len(trace); i++ {
 		v := trace[i]
-		medianValue := medianRate * (heightsAndTimes[i].Time - heightsAndTimes[i-1].Time)
+		medianValue := min(cap, medianRate*max(1, heightsAndTimes[i].Time-heightsAndTimes[i-1].Time))
 		switch {
 		case !peakStarted && v < medianValue:
 			continue // nothing to do
@@ -331,8 +331,9 @@ func main() {
 	fmt.Printf("\n")
 
 	// find top peaks
+	// maxComplexities = commonfees.Dimensions{40_000, 12_000, 16_000, 1_200_000}
 	medianComplexityRate := commonfees.Dimensions{200, 60, 80, 600}
-	topPeaks := findAllDimensionPeaks(records, medianComplexityRate, 10)
+	topPeaks := findAllDimensionPeaks(records, maxComplexities, medianComplexityRate, 10)
 	for d := uint64(0); d < commonfees.FeeDimensions; d++ {
 		for i := len(topPeaks[d]) - 1; i >= 0; i-- {
 			fmt.Printf("peak n° %d, dimension %s: %+v\n", len(topPeaks[d])-i, commonfees.DimensionStrings[d], topPeaks[d][i])
@@ -346,11 +347,13 @@ func main() {
 		dimensionPeaks = topPeaks[dimension]
 		targetPeak     = dimensionPeaks[len(dimensionPeaks)-1]
 
-		margin    = 25 // plotting from minHeight - margin to maxHeight + margin
-		minHeight = targetPeak.StartHeight
+		minHeight = targetPeak.StartHeight + 1
 		maxHeight = minHeight + uint64(targetPeak.BlocksCount)
-		low       = uint64(max(0, int(minHeight)-margin))
-		up        = maxHeight + uint64(margin)
+		marginLow = 5
+		low       = uint64(max(0, int(minHeight)-marginLow)) // minHeight - some margin
+
+		marginUp = 15
+		up       = maxHeight + uint64(marginUp) // maxHeight + some margin
 
 		r      = filterRecordsByHeight(records, low, up)
 		data   = pullComplexityFromRecords(r, dimension)
@@ -358,14 +361,30 @@ func main() {
 		target = make([]uint64, len(r)) // target complexity
 	)
 
+	// // x is a synthetic dimension along which we plot data.
+	// // BlockHeight would space our data points equally even if blocks are pretty distant in time.
+	// // BlockTime may clusted some data points, since consecutive blocks may be the same timestamp
+	// // It may also show a spike in target capacity if blocks are far in time.
+	// // To ease up comprehension, we use a synthetic dimension that picks, at each point,
+	// // we pick the timestamp but we artificially increment it if consecutive blocks have the same time
+	// x[0] = r[0].Time
+	// for i := 1; i < len(data); i++ {
+	// 	x[i] = x[i-1] + max(r[i].Height-r[i-1].Height, r[i].Time-r[i-1].Time)
+	// }
+
 	for i := 0; i < len(data); i++ {
-		x[i] = r[i].Height - r[0].Height
+		x[i] = r[i].Height
 	}
 
 	for i := 1; i < len(data); i++ {
-		target[i] = medianComplexityRate[dimension] * (r[i].Time - r[i-1].Time)
+		target[i] = min(maxComplexities[dimension], medianComplexityRate[dimension]*(max(1, r[i].Time-r[i-1].Time)))
 	}
-	// target[0] = target[1]
+	target[0] = target[1]
+
+	// for _, d := range r {
+	// 	fmt.Printf("%v\n", d)
+	// }
+	// fmt.Printf("\n")
 
 	printImage(x, data, target, dimension)
 }
