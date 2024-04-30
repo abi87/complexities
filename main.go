@@ -65,11 +65,10 @@ func readCsvFile(filePath string) []data {
 			err   error
 		)
 
-		// TODO: check that there are no parsing errors
-		// entry.ID, err = ids.FromString(row[0])
-		// if err != nil {
-		// 	log.Fatalf("failed processing blkID, line %d: %s", ri, err)
-		// }
+		entry.ID, err = ids.FromString(row[0])
+		if err != nil {
+			log.Fatalf("failed processing blkID, line %d: %s", ri, err)
+		}
 
 		h, err := strconv.Atoi(row[1])
 		if err != nil {
