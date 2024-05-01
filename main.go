@@ -42,14 +42,22 @@ type rawData struct {
 type feeData struct {
 	BlkHeightTime
 	feeRates commonfees.Dimensions
+	fee      uint64
 }
 
-func calculateFeeRates(records []rawData, feeCfg commonfees.DynamicFeesConfig) []feeData {
+func calculateFeeData(records []rawData, feeCfg commonfees.DynamicFeesConfig) []feeData {
 	res := make([]feeData, 0, len(records))
+
+	initialFeeMan := commonfees.NewManager(feeCfg.InitialFeeRate)
+	fee, err := initialFeeMan.CalculateFee(records[0].Complexity)
+	if err != nil {
+		panic(fmt.Sprintf("failed computing initial fee from fee rates, %s", err))
+	}
 
 	res = append(res, feeData{
 		BlkHeightTime: records[0].BlkHeightTime,
 		feeRates:      feeCfg.InitialFeeRate,
+		fee:           fee,
 	})
 	for i := 1; i < len(records); i++ {
 		var (
@@ -58,7 +66,8 @@ func calculateFeeRates(records []rawData, feeCfg commonfees.DynamicFeesConfig) [
 			parentBlkComplexity = records[i-1].Complexity
 			parentFeeRates      = res[len(res)-1].feeRates
 
-			blkTime = int64(r.Time)
+			blkTime       = int64(r.Time)
+			blkComplexity = r.Complexity
 		)
 
 		feeMan := commonfees.NewManager(parentFeeRates)
@@ -71,9 +80,15 @@ func calculateFeeRates(records []rawData, feeCfg commonfees.DynamicFeesConfig) [
 			panic(fmt.Sprintf("failed updating fee rates, %s", err))
 		}
 
+		fee, err := feeMan.CalculateFee(blkComplexity)
+		if err != nil {
+			panic(fmt.Sprintf("failed computing fee from fee rates, %s", err))
+		}
+
 		res = append(res, feeData{
 			BlkHeightTime: r.BlkHeightTime,
 			feeRates:      feeMan.GetFeeRates(),
+			fee:           fee,
 		})
 	}
 
@@ -350,7 +365,7 @@ func main() {
 	targetBlockDelay, targetComplexityRate := targetComplexityRate(
 		records,
 		minBanffHeight, /*skip pre Banff blocks*/
-		0.8,            /*from 0 to 1*/
+		0.75,           /*from 0 to 1*/
 	)
 	fmt.Printf("target block delay: %v\n", targetBlockDelay)
 	fmt.Printf("target complexities: %v\n", targetComplexityRate)
@@ -410,14 +425,14 @@ func main() {
 		BlockMaxComplexity:        maxComplexities,
 		BlockTargetComplexityRate: targetComplexityRate,
 	}
-	allFeeRates := calculateFeeRates(r, feeCfg)
+	allFeeRates := calculateFeeData(r, feeCfg)
 
 	// plots ranges of complexities
 	var (
-		data    = pullComplexityFromRecords(r, dimension)
-		x       = make([]uint64, len(r)) // block height or timestamp
-		target  = make([]uint64, len(r)) // target complexity
-		feeRate = pullFeeRates(allFeeRates, low, up, commonfees.Bandwidth)
+		data   = pullComplexityFromRecords(r, dimension)
+		x      = make([]uint64, len(r)) // block height or timestamp
+		target = make([]uint64, len(r)) // target complexity
+		fees   = pullFees(allFeeRates, low, up)
 	)
 
 	// // x is a synthetic dimension along which we plot data.
@@ -440,7 +455,7 @@ func main() {
 	}
 	target[0] = target[1]
 
-	printImage(x, data, target, feeRate, dimension)
+	printImage(x, data, target, fees, dimension)
 }
 
 func printImage(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimension) {
@@ -453,7 +468,7 @@ func printImage(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimens
 	err := plotutil.AddLinePoints(p,
 		commonfees.DimensionStrings[d], traceToPlotter(x, data),
 		"target", traceToPlotter(x, targetComplexity),
-		"feeRate", traceToPlotter(x, feeRate),
+		"fee", traceToPlotter(x, feeRate),
 	)
 	if err != nil {
 		panic(err)
@@ -494,13 +509,13 @@ func pullComplexityFromRecords(records []rawData, d commonfees.Dimension) []uint
 	return res
 }
 
-func pullFeeRates(allFeeRates []feeData, low, up uint64, d commonfees.Dimension) []uint64 {
+func pullFees(allFeeRates []feeData, low, up uint64) []uint64 {
 	res := make([]uint64, 0, min(len(allFeeRates), int(up-low)))
 	for _, data := range allFeeRates {
 		if data.Height < low || data.Height > up {
 			continue
 		}
-		res = append(res, data.feeRates[d])
+		res = append(res, data.fee)
 	}
 	return res
 }
