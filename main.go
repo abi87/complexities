@@ -389,14 +389,14 @@ func main() {
 	var (
 		dimension      = commonfees.Bandwidth
 		dimensionPeaks = topPeaks[dimension]
-		targetPeak     = dimensionPeaks[len(dimensionPeaks)-1]
+		targetPeak     = dimensionPeaks[len(dimensionPeaks)-2]
 
 		minHeight = targetPeak.StartHeight + 1
 		maxHeight = minHeight + uint64(targetPeak.BlocksCount)
-		marginLow = 10
+		marginLow = 20
 		low       = uint64(max(0, int(minHeight)-marginLow)) // minHeight - some margin
 
-		marginUp = 10
+		marginUp = 60
 		up       = maxHeight + uint64(marginUp) // maxHeight + some margin
 
 		r = filterRecordsByHeight(records, low, up)
@@ -417,10 +417,10 @@ func main() {
 			35 * units.NanoAvax,
 		},
 		UpdateCoefficient: commonfees.Dimensions{ // over fees.CoeffDenom
-			3,
+			5,
 			2,
 			2,
-			3,
+			4,
 		},
 		BlockMaxComplexity:        maxComplexities,
 		BlockTargetComplexityRate: targetComplexityRate,
