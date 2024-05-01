@@ -208,9 +208,9 @@ func findAllDimensionPeaks(
 }
 
 // Peaks are defined as follows:
-// - They start when trace goes above median value
-// - They finish when trace goes below the median value
-// Note that median value are median rate * elapsed time among blocks
+// - They start when trace goes above target value
+// - They finish when trace goes below the target value
+// Note that target value are target rate * elapsed time among blocks
 // Peaks are sorted decreasingly by cumulated complexity
 func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, cap, medianRate uint64) []peakData {
 	if len(heightsAndTimes) != len(trace) {
@@ -276,9 +276,9 @@ func findPeaks(heightsAndTimes []BlkHeightTime, trace []uint64, cap, medianRate 
 }
 
 func targetComplexityRate(records []rawData, minHeight uint64, quantile float64) (uint64, commonfees.Dimensions) {
-	// targetComplexityRate calculates median time among blocks and complexity rate at chosen quantile
+	// targetComplexityRate calculates target time among blocks and complexity rate at chosen quantile
 	// We drop empty blocks, with no complexity, since they would skew down
-	// median complexity.
+	// target complexity.
 	// We can skip pre-Banff blocks, whose timestamp is not in the block really
 
 	// We return a 5 components slice with:
@@ -435,6 +435,14 @@ func main() {
 		fees   = pullFees(allFeeRates, low, up)
 	)
 
+	{
+		maxFee := slices.Max(fees)
+		maxFeeAvax := maxFee / units.Avax
+		maxFeeMilliAvax := (maxFee - maxFeeAvax*units.Avax) / units.MilliAvax
+		fmt.Printf("Max fee: %v Avax, %v (milliAvax)\n", maxFeeAvax, maxFeeMilliAvax)
+		fmt.Printf("\n")
+	}
+
 	// // x is a synthetic dimension along which we plot data.
 	// // BlockHeight would space our data points equally even if blocks are pretty distant in time.
 	// // BlockTime may clusted some data points, since consecutive blocks may be the same timestamp
@@ -455,19 +463,38 @@ func main() {
 	}
 	target[0] = target[1]
 
-	printImage(x, data, target, fees, dimension)
+	printImages(x, data, target, fees, dimension)
 }
 
-func printImage(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimension) {
-	p := plot.New()
+func printImages(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimension) {
+	p1 := plot.New()
 
-	p.Title.Text = "peak complexities"
-	p.X.Label.Text = "block heights"
-	p.Y.Label.Text = "complexity"
+	p1.Title.Text = "peak complexities"
+	p1.X.Label.Text = "block heights"
+	p1.Y.Label.Text = "complexity"
 
-	err := plotutil.AddLinePoints(p,
+	err := plotutil.AddLinePoints(p1,
 		commonfees.DimensionStrings[d], traceToPlotter(x, data),
 		"target", traceToPlotter(x, targetComplexity),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	// Save the plot to a PNG file.
+	if err := p1.Save(4*vg.Inch, 4*vg.Inch, "complexities.png"); err != nil {
+		panic(err)
+	}
+
+	///////////////////////////////////////////////////////////////////////////
+	///////////////////////////////////////////////////////////////////////////
+
+	p2 := plot.New()
+	p2.Title.Text = "fee"
+	p2.X.Label.Text = "block heights"
+	p2.Y.Label.Text = "fee"
+
+	err = plotutil.AddLinePoints(p2,
 		"fee", traceToPlotter(x, feeRate),
 	)
 	if err != nil {
@@ -475,7 +502,7 @@ func printImage(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimens
 	}
 
 	// Save the plot to a PNG file.
-	if err := p.Save(4*vg.Inch, 4*vg.Inch, fmt.Sprintf("%s.png", commonfees.DimensionStrings[d])); err != nil {
+	if err := p2.Save(4*vg.Inch, 4*vg.Inch, "fee.png"); err != nil {
 		panic(err)
 	}
 }
