@@ -42,7 +42,7 @@ type rawData struct {
 type feeData struct {
 	BlkHeightTime
 	feeRates commonfees.Dimensions
-	fee      uint64
+	fee      float64 // in Avax
 }
 
 func calculateFeeData(records []rawData, feeCfg commonfees.DynamicFeesConfig) []feeData {
@@ -57,7 +57,7 @@ func calculateFeeData(records []rawData, feeCfg commonfees.DynamicFeesConfig) []
 	res = append(res, feeData{
 		BlkHeightTime: records[0].BlkHeightTime,
 		feeRates:      feeCfg.InitialFeeRate,
-		fee:           fee,
+		fee:           float64(fee) / float64(units.Avax),
 	})
 	for i := 1; i < len(records); i++ {
 		var (
@@ -88,7 +88,7 @@ func calculateFeeData(records []rawData, feeCfg commonfees.DynamicFeesConfig) []
 		res = append(res, feeData{
 			BlkHeightTime: r.BlkHeightTime,
 			feeRates:      feeMan.GetFeeRates(),
-			fee:           fee,
+			fee:           float64(fee) / float64(units.Avax),
 		})
 	}
 
@@ -379,17 +379,17 @@ func main() {
 
 	// find top peaks
 	topPeaks := findAllDimensionPeaks(records, maxComplexities, targetComplexityRate, 10)
-	for d := uint64(0); d < commonfees.FeeDimensions; d++ {
-		for i := len(topPeaks[d]) - 1; i >= 0; i-- {
-			fmt.Printf("peak n° %d, dimension %s: %+v\n", len(topPeaks[d])-i, commonfees.DimensionStrings[d], topPeaks[d][i])
-		}
-		fmt.Printf("\n")
-	}
+	// for d := uint64(0); d < commonfees.FeeDimensions; d++ {
+	// 	for i := len(topPeaks[d]) - 1; i >= 0; i-- {
+	// 		fmt.Printf("peak n° %d, dimension %s: %+v\n", len(topPeaks[d])-i, commonfees.DimensionStrings[d], topPeaks[d][i])
+	// 	}
+	// 	fmt.Printf("\n")
+	// }
 
 	var (
 		dimension      = commonfees.Bandwidth
 		dimensionPeaks = topPeaks[dimension]
-		targetPeak     = dimensionPeaks[len(dimensionPeaks)-2]
+		targetPeak     = dimensionPeaks[len(dimensionPeaks)-1]
 
 		minHeight = targetPeak.StartHeight + 1
 		maxHeight = minHeight + uint64(targetPeak.BlocksCount)
@@ -422,9 +422,16 @@ func main() {
 			2,
 			4,
 		},
-		BlockMaxComplexity:        maxComplexities,
-		BlockTargetComplexityRate: targetComplexityRate,
+		BlockMaxComplexity: maxComplexities,
+		// BlockTargetComplexityRate: targetComplexityRate,
+		BlockTargetComplexityRate: commonfees.Dimensions{
+			250,
+			60,
+			120,
+			650,
+		},
 	}
+	fmt.Printf("Fee config: %+v\n", feeCfg)
 	allFeeRates := calculateFeeData(r, feeCfg)
 
 	// plots ranges of complexities
@@ -437,9 +444,7 @@ func main() {
 
 	{
 		maxFee := slices.Max(fees)
-		maxFeeAvax := maxFee / units.Avax
-		maxFeeMilliAvax := (maxFee - maxFeeAvax*units.Avax) / units.MilliAvax
-		fmt.Printf("Max fee: %v Avax, %v (milliAvax)\n", maxFeeAvax, maxFeeMilliAvax)
+		fmt.Printf("Max fee: %v Avax\n", maxFee)
 		fmt.Printf("\n")
 	}
 
@@ -466,7 +471,7 @@ func main() {
 	printImages(x, data, target, fees, dimension)
 }
 
-func printImages(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimension) {
+func printImages(x, data, targetComplexity []uint64, feeRate []float64, d commonfees.Dimension) {
 	p1 := plot.New()
 
 	p1.Title.Text = "peak complexities"
@@ -474,8 +479,8 @@ func printImages(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimen
 	p1.Y.Label.Text = "complexity"
 
 	err := plotutil.AddLinePoints(p1,
-		commonfees.DimensionStrings[d], traceToPlotter(x, data),
-		"target", traceToPlotter(x, targetComplexity),
+		commonfees.DimensionStrings[d], traceUint64ToPlotter(x, data),
+		"target", traceUint64ToPlotter(x, targetComplexity),
 	)
 	if err != nil {
 		panic(err)
@@ -495,7 +500,7 @@ func printImages(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimen
 	p2.Y.Label.Text = "fee"
 
 	err = plotutil.AddLinePoints(p2,
-		"fee", traceToPlotter(x, feeRate),
+		"fee", traceFloat64ToPlotter(x, feeRate),
 	)
 	if err != nil {
 		panic(err)
@@ -507,7 +512,7 @@ func printImages(x, data, targetComplexity, feeRate []uint64, d commonfees.Dimen
 	}
 }
 
-func traceToPlotter(x, trace []uint64) plotter.XYs {
+func traceUint64ToPlotter(x, trace []uint64) plotter.XYs {
 	if len(x) != len(trace) {
 		panic("uneven x and y")
 	}
@@ -516,6 +521,19 @@ func traceToPlotter(x, trace []uint64) plotter.XYs {
 	for i, v := range trace {
 		pts[i].X = float64(x[i])
 		pts[i].Y = float64(v) // / float64(max)
+	}
+	return pts
+}
+
+func traceFloat64ToPlotter(x []uint64, trace []float64) plotter.XYs {
+	if len(x) != len(trace) {
+		panic("uneven x and y")
+	}
+	// max := slices.Max(trace)
+	pts := make(plotter.XYs, len(trace))
+	for i, v := range trace {
+		pts[i].X = float64(x[i])
+		pts[i].Y = v // / max
 	}
 	return pts
 }
@@ -536,8 +554,8 @@ func pullComplexityFromRecords(records []rawData, d commonfees.Dimension) []uint
 	return res
 }
 
-func pullFees(allFeeRates []feeData, low, up uint64) []uint64 {
-	res := make([]uint64, 0, min(len(allFeeRates), int(up-low)))
+func pullFees(allFeeRates []feeData, low, up uint64) []float64 {
+	res := make([]float64, 0, min(len(allFeeRates), int(up-low)))
 	for _, data := range allFeeRates {
 		if data.Height < low || data.Height > up {
 			continue
