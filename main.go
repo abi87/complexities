@@ -417,10 +417,10 @@ func main() {
 			35 * units.NanoAvax,
 		},
 		UpdateCoefficient: commonfees.Dimensions{ // over fees.CoeffDenom
-			5,
+			3,
+			1,
+			1,
 			2,
-			2,
-			4,
 		},
 		BlockMaxComplexity: maxComplexities,
 		// BlockTargetComplexityRate: targetComplexityRate,
@@ -471,7 +471,7 @@ func main() {
 	printImages(x, data, target, fees, dimension)
 }
 
-func printImages(x, data, targetComplexity []uint64, feeRate []float64, d commonfees.Dimension) {
+func printImages(x, data, targetComplexity []uint64, fees []float64, d commonfees.Dimension) {
 	p1 := plot.New()
 
 	p1.Title.Text = "peak complexities"
@@ -497,10 +497,10 @@ func printImages(x, data, targetComplexity []uint64, feeRate []float64, d common
 	p2 := plot.New()
 	p2.Title.Text = "fee"
 	p2.X.Label.Text = "block heights"
-	p2.Y.Label.Text = "fee"
+	p2.Y.Label.Text = "fee (Avax)"
 
 	err = plotutil.AddLinePoints(p2,
-		"fee", traceFloat64ToPlotter(x, feeRate),
+		"fee", traceFloat64ToPlotter(x, fees),
 	)
 	if err != nil {
 		panic(err)
