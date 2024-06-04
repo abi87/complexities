@@ -48,7 +48,9 @@ type feeData struct {
 func calculateFeeData(records []rawData, feeCfg commonfees.DynamicFeesConfig) []feeData {
 	res := make([]feeData, 0, len(records))
 
-	initialFeeMan := commonfees.NewManager(feeCfg.InitialFeeRate)
+	initialFeeMan := commonfees.NewManager(commonfees.Empty)
+	excessComplexity := commonfees.Empty
+
 	fee, err := initialFeeMan.CalculateFee(records[0].Complexity)
 	if err != nil {
 		panic(fmt.Sprintf("failed computing initial fee from fee rates, %s", err))
@@ -56,24 +58,22 @@ func calculateFeeData(records []rawData, feeCfg commonfees.DynamicFeesConfig) []
 
 	res = append(res, feeData{
 		BlkHeightTime: records[0].BlkHeightTime,
-		feeRates:      feeCfg.InitialFeeRate,
+		feeRates:      feeCfg.MinFeeRate,
 		fee:           float64(fee) / float64(units.Avax),
 	})
 	for i := 1; i < len(records); i++ {
 		var (
-			r                   = records[i]
-			parentBlkTime       = int64(records[i-1].Time)
-			parentBlkComplexity = records[i-1].Complexity
-			parentFeeRates      = res[len(res)-1].feeRates
+			r             = records[i]
+			parentBlkTime = int64(records[i-1].Time)
 
 			blkTime       = int64(r.Time)
 			blkComplexity = r.Complexity
 		)
 
-		feeMan := commonfees.NewManager(parentFeeRates)
+		feeMan := commonfees.NewManager(commonfees.Empty)
 		if err := feeMan.UpdateFeeRates(
 			feeCfg,
-			parentBlkComplexity,
+			excessComplexity,
 			parentBlkTime,
 			blkTime,
 		); err != nil {
@@ -83,6 +83,15 @@ func calculateFeeData(records []rawData, feeCfg commonfees.DynamicFeesConfig) []
 		fee, err := feeMan.CalculateFee(blkComplexity)
 		if err != nil {
 			panic(fmt.Sprintf("failed computing fee from fee rates, %s", err))
+		}
+
+		breached, _ := feeMan.CumulateComplexity(blkComplexity, commonfees.Max)
+		if breached {
+			panic("breached complexity")
+		}
+		excessComplexity, err = feeMan.GetExcessCumulatedGas()
+		if breached {
+			panic(fmt.Sprintf("failed calculating excess gass, %s", err))
 		}
 
 		res = append(res, feeData{
@@ -396,7 +405,7 @@ func main() {
 		marginLow = 5
 		low       = uint64(max(0, int(minHeight)-marginLow)) // minHeight - some margin
 
-		marginUp = 3
+		marginUp = 0
 		up       = maxHeight + uint64(marginUp) // maxHeight + some margin
 
 		r = filterRecordsByHeight(records, low, up)
@@ -404,23 +413,17 @@ func main() {
 
 	// calculate fee rates
 	feeCfg := commonfees.DynamicFeesConfig{
-		InitialFeeRate: commonfees.Dimensions{
-			80 * units.NanoAvax,
-			10 * units.NanoAvax,
-			15 * units.NanoAvax,
-			50 * units.NanoAvax,
-		},
 		MinFeeRate: commonfees.Dimensions{ // 3/4 of InitialFees
 			60 * units.NanoAvax,
 			8 * units.NanoAvax,
 			10 * units.NanoAvax,
 			35 * units.NanoAvax,
 		},
-		UpdateCoefficient: commonfees.Dimensions{ // over fees.CoeffDenom
-			1,
-			1,
-			1,
-			1,
+		UpdateDenominators: commonfees.Dimensions{ // over fees.CoeffDenom
+			50_000,
+			50_000,
+			50_000,
+			500_000,
 		},
 		BlockMaxComplexity: commonfees.Dimensions{
 			100_000,
