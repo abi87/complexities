@@ -365,7 +365,7 @@ func main() {
 	targetBlockDelay, targetComplexityRate := targetComplexityRate(
 		records,
 		minBanffHeight, /*skip pre Banff blocks*/
-		0.75,           /*from 0 to 1*/
+		0.99,           /*from 0 to 1*/
 	)
 	fmt.Printf("target block delay: %v\n", targetBlockDelay)
 	fmt.Printf("target complexities: %v\n", targetComplexityRate)
@@ -389,14 +389,14 @@ func main() {
 	var (
 		dimension      = commonfees.Bandwidth
 		dimensionPeaks = topPeaks[dimension]
-		targetPeak     = dimensionPeaks[len(dimensionPeaks)-1]
+		targetPeak     = dimensionPeaks[len(dimensionPeaks)-2]
 
 		minHeight = targetPeak.StartHeight + 1
 		maxHeight = minHeight + uint64(targetPeak.BlocksCount)
-		marginLow = 20
+		marginLow = 5
 		low       = uint64(max(0, int(minHeight)-marginLow)) // minHeight - some margin
 
-		marginUp = 60
+		marginUp = 3
 		up       = maxHeight + uint64(marginUp) // maxHeight + some margin
 
 		r = filterRecordsByHeight(records, low, up)
@@ -417,18 +417,22 @@ func main() {
 			35 * units.NanoAvax,
 		},
 		UpdateCoefficient: commonfees.Dimensions{ // over fees.CoeffDenom
-			3,
 			1,
 			1,
-			2,
+			1,
+			1,
 		},
-		BlockMaxComplexity: maxComplexities,
-		// BlockTargetComplexityRate: targetComplexityRate,
+		BlockMaxComplexity: commonfees.Dimensions{
+			100_000,
+			60_000,
+			60_000,
+			500_000,
+		},
 		BlockTargetComplexityRate: commonfees.Dimensions{
+			500,
+			180,
 			250,
-			60,
-			120,
-			650,
+			2_000,
 		},
 	}
 	fmt.Printf("Fee config: %+v\n", feeCfg)
@@ -439,7 +443,7 @@ func main() {
 		data   = pullComplexityFromRecords(r, dimension)
 		x      = make([]uint64, len(r)) // block height or timestamp
 		target = make([]uint64, len(r)) // target complexity
-		fees   = pullFees(allFeeRates, low, up)
+		fees   = pullFees(allFeeRates, low /*up*/, r[len(r)-1].Height)
 	)
 
 	{
@@ -448,20 +452,20 @@ func main() {
 		fmt.Printf("\n")
 	}
 
+	for i := 0; i < len(data); i++ {
+		x[i] = r[i].Height
+	}
+
 	// // x is a synthetic dimension along which we plot data.
 	// // BlockHeight would space our data points equally even if blocks are pretty distant in time.
 	// // BlockTime may clusted some data points, since consecutive blocks may be the same timestamp
 	// // It may also show a spike in target capacity if blocks are far in time.
 	// // To ease up comprehension, we use a synthetic dimension that picks, at each point,
 	// // we pick the timestamp but we artificially increment it if consecutive blocks have the same time
-	// x[0] = r[0].Time
+	// x[0] = r[0].Height
 	// for i := 1; i < len(data); i++ {
 	// 	x[i] = x[i-1] + max(r[i].Height-r[i-1].Height, r[i].Time-r[i-1].Time)
 	// }
-
-	for i := 0; i < len(data); i++ {
-		x[i] = r[i].Height
-	}
 
 	for i := 1; i < len(data); i++ {
 		target[i] = min(maxComplexities[dimension], targetComplexityRate[dimension]*(max(1, r[i].Time-r[i-1].Time)))
