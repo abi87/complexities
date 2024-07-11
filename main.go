@@ -49,22 +49,21 @@ type feeData struct {
 func calculateFeeData(records []rawData, feeCfg commonfee.DynamicFeesConfig) []feeData {
 	res := make([]feeData, 0, len(records))
 
-	initialFeeMan := commonfee.NewCalculator(feeCfg.MinGasPrice, math.MaxUint64)
-
-	txGas, err := commonfee.ScalarProd(records[0].Complexity, feeCfg.FeeDimensionWeights)
-	if err != nil {
-		panic(fmt.Sprintf("failed computing scalar product, %s", err))
-	}
-
-	fee, err := initialFeeMan.CalculateFee(txGas)
-	if err != nil {
-		panic(fmt.Sprintf("failed computing initial fee from fee rates, %s", err))
-	}
-
-	if err := initialFeeMan.CumulateGas(txGas); err != nil {
+	initialFeeMan := commonfee.NewCalculator(feeCfg.FeeDimensionWeights, feeCfg.MinGasPrice, math.MaxUint64)
+	if err := initialFeeMan.CumulateComplexity(records[0].Complexity); err != nil {
 		panic(fmt.Sprintf("failed cumulating gas, %s", err))
 	}
-	excessGas := initialFeeMan.GetExcessGas()
+	fee, err := initialFeeMan.GetLatestTxFee()
+	if err != nil {
+		panic(fmt.Sprintf("failed computing initial fee from gas prices, %s", err))
+	}
+	if err := initialFeeMan.DoneWithLatestTx(); err != nil {
+		panic(fmt.Sprintf("failed rotating complexity, %s", err))
+	}
+	excessGas, err := initialFeeMan.GetExcessGas()
+	if err != nil {
+		panic(fmt.Sprintf("failed calculating excess gas, %s", err))
+	}
 
 	res = append(res, feeData{
 		BlkHeightTime: records[0].BlkHeightTime,
@@ -88,22 +87,22 @@ func calculateFeeData(records []rawData, feeCfg commonfee.DynamicFeesConfig) []f
 			time.Unix(blkTime, 0),
 		)
 		if err != nil {
-			panic(fmt.Sprintf("failed updating fee rates, %s", err))
+			panic(fmt.Sprintf("failed updating gas prices, %s", err))
 		}
-
-		txGas, err := commonfee.ScalarProd(blkComplexity, feeCfg.FeeDimensionWeights)
-		if err != nil {
-			panic(fmt.Sprintf("failed computing scalar product, %s", err))
-		}
-		fee, err := feeMan.CalculateFee(txGas)
-		if err != nil {
-			panic(fmt.Sprintf("failed computing fee from fee rates, %s", err))
-		}
-
-		if err := initialFeeMan.CumulateGas(txGas); err != nil {
+		if err := feeMan.CumulateComplexity(blkComplexity); err != nil {
 			panic(fmt.Sprintf("failed cumulating gas, %s", err))
 		}
-		excessGas = initialFeeMan.GetExcessGas()
+		fee, err := feeMan.GetLatestTxFee()
+		if err != nil {
+			panic(fmt.Sprintf("failed computing fee from gas prices, %s", err))
+		}
+		if err := feeMan.DoneWithLatestTx(); err != nil {
+			panic(fmt.Sprintf("failed rotating complexity, %s", err))
+		}
+		excessGas, err = feeMan.GetExcessGas()
+		if err != nil {
+			panic(fmt.Sprintf("failed calculating excess gas, %s", err))
+		}
 
 		res = append(res, feeData{
 			BlkHeightTime: r.BlkHeightTime,
@@ -422,12 +421,12 @@ func main() {
 		r = filterRecordsByHeight(records, low, up)
 	)
 
-	// calculate fee rates
+	// calculate gas prices
 	feeCfg := commonfee.DynamicFeesConfig{
 		MinGasPrice:         commonfee.GasPrice(10 * units.NanoAvax),
-		UpdateDenominator:   commonfee.Gas(400_000),
-		GasTargetRate:       commonfee.Gas(10_000),
-		FeeDimensionWeights: commonfee.Dimensions{1, 1, 1, 1},
+		UpdateDenominator:   commonfee.Gas(100_000),
+		GasTargetRate:       commonfee.Gas(2_500),
+		FeeDimensionWeights: commonfee.Dimensions{6, 10, 10, 1},
 		MaxGasPerSecond:     commonfee.Gas(1_000_000),
 		LeakGasCoeff:        commonfee.Gas(1),
 	}
